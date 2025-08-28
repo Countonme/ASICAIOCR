@@ -30,12 +30,18 @@
     <ClInclude Include="FileLogger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ROIManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ASICAIOCR.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="FileLogger.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ROIManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

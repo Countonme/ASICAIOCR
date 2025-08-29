@@ -9,9 +9,12 @@
 #include <opencv2/opencv.hpp>
 #include <windowsx.h>
 #include <algorithm>
-
-//#include <tesseract/baseapi.h>
+#include "MvCameraControl.h"
+#include <tesseract/baseapi.h>
 #include <leptonica/allheaders.h>
+#include <mutex>
+std::mutex g_roiMutex;  // 用于保护 roiList 的访问
+
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "opencv_world4120d.lib") // 改成你实际的 OpenCV lib
 
@@ -39,6 +42,10 @@ double g_alpha = 1.0; // 对比度
 int g_beta = 0;       // 亮度
 bool g_flipH = false;
 bool g_flipV = false;
+
+cv::Mat g_lastFrame;
+std::mutex g_frameMutex;
+
 // ROI
 struct ROI {
 	RECT rect;
@@ -48,7 +55,17 @@ std::vector<ROI> roiList;
 RECT roiRect = { 0,0,0,0 };
 bool roiDrawing = false;
 POINT ptStart = { 0,0 };
-
+// UTF-8 转 wchar_t（Windows 专用）
+std::wstring Utf8ToWstring(const std::string& str)
+{
+	if (str.empty()) return L"";
+	int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+		(int)str.size(), NULL, 0);
+	std::wstring wstr(sizeNeeded, 0);
+	MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
+		(int)str.size(), &wstr[0], sizeNeeded);
+	return wstr;
+}
 // 窗口布局常量
 const int VIDEO_WIDTH = 640;
 const int VIDEO_HEIGHT = 480;
@@ -217,7 +234,7 @@ void ResizeControls(HWND hwnd)
 	int width = rcClient.right;
 	int height = rcClient.bottom;
 
-	MoveWindow(hwndVideo, 2, 2, VIDEO_WIDTH, VIDEO_HEIGHT, TRUE);
+	MoveWindow(hwndVideo, 1, 1, VIDEO_WIDTH, VIDEO_HEIGHT, TRUE);
 
 	int xBtn = width - RIGHT_WIDTH + MARGIN;
 	int y = MARGIN;
@@ -264,8 +281,8 @@ void AppendLog(const std::wstring& msg)
 	SendMessage(hwndLog, EM_REPLACESEL, FALSE, (LPARAM)msg.c_str());
 }
 
-// ================= 视频线程 =================
-void VideoThread(HWND hwnd)
+// ================= 视频Opencv  =================
+void VideoThreadForOpenCV(HWND hwnd)
 {
 	cv::VideoCapture cap(0);
 	if (!cap.isOpened())
@@ -283,6 +300,9 @@ void VideoThread(HWND hwnd)
 		if (frame.empty()) continue;
 		// 亮度/对比度
 		frame.convertTo(frame, -1, g_alpha, g_beta);
+
+		std::lock_guard<std::mutex> lock(g_frameMutex);
+		g_lastFrame = frame.clone();
 
 		// 翻转
 		if (g_flipH) cv::flip(frame, frame, 1);
@@ -327,6 +347,118 @@ void VideoThread(HWND hwnd)
 		std::this_thread::sleep_for(std::chrono::milliseconds(30));
 	}
 	ReleaseDC(hwnd, hdc);
+}
+
+//###########海康USB 相机##############
+void VideoThread(HWND hwnd)
+{
+	int nRet = MV_OK;
+	void* handle = nullptr;
+	MV_CC_DEVICE_INFO_LIST deviceList = { 0 };
+
+	// 枚举设备
+	nRet = MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, &deviceList);
+	if (MV_OK != nRet || deviceList.nDeviceNum == 0) {
+		AppendLog(L"未发现海康工业相机\r\n");
+		return;
+	}
+
+	// 创建句柄并打开设备
+	nRet = MV_CC_CreateHandle(&handle, deviceList.pDeviceInfo[0]);
+	if (MV_OK != nRet) { AppendLog(L"创建句柄失败\r\n"); return; }
+	nRet = MV_CC_OpenDevice(handle);
+	if (MV_OK != nRet) { AppendLog(L"打开相机失败\r\n"); return; }
+
+	MV_CC_StartGrabbing(handle);
+
+	HDC hdcWindow = GetDC(hwnd);
+	cv::Mat frame;
+
+	while (running)
+	{
+		MV_FRAME_OUT stOutFrame = { 0 };
+		nRet = MV_CC_GetImageBuffer(handle, &stOutFrame, 1000);
+		if (nRet != MV_OK) continue;
+
+		// 转为 OpenCV Mat
+		cv::Mat img(stOutFrame.stFrameInfo.nHeight,
+			stOutFrame.stFrameInfo.nWidth,
+			CV_8UC1, stOutFrame.pBufAddr);
+		cv::cvtColor(img, frame, cv::COLOR_BayerBG2BGR);
+
+		{
+			std::lock_guard<std::mutex> lock(g_frameMutex);
+			g_lastFrame = frame.clone();
+		}
+
+		// 图像处理
+		if (g_flipH) cv::flip(frame, frame, 1);
+		if (g_flipV) cv::flip(frame, frame, 0);
+		switch (processMode)
+		{
+		case 1: cv::cvtColor(frame, frame, cv::COLOR_BGR2GRAY); break;
+		case 2: cv::threshold(frame, frame, 128, 255, cv::THRESH_BINARY); break;
+		case 3: cv::bitwise_not(frame, frame); break;
+		case 4: cv::GaussianBlur(frame, frame, cv::Size(5, 5), 0); break;
+		case 5: cv::Canny(frame, frame, 50, 150); break;
+		}
+		frame.convertTo(frame, -1, g_alpha, g_beta);
+
+		// 获取窗口客户区大小
+		RECT rc; GetClientRect(hwnd, &rc);
+		int winW = rc.right - rc.left;
+		int winH = rc.bottom - rc.top;
+
+		// 缩放显示
+		cv::Mat display;
+		cv::resize(frame, display, cv::Size(winW, winH));
+		cv::cvtColor(display, display, cv::COLOR_BGR2BGRA);
+
+		// 缩放比例，用于从原图 ROI 转到显示坐标
+		double scaleX = double(winW) / frame.cols;
+		double scaleY = double(winH) / frame.rows;
+
+		auto drawRect = [&](cv::Mat& img, const RECT& r, const cv::Scalar& color) {
+			int left = int(std::min(r.left, r.right) * scaleX);
+			int right = int(std::max(r.left, r.right) * scaleX);
+			int top = int(std::min(r.top, r.bottom) * scaleY);
+			int bottom = int(std::max(r.top, r.bottom) * scaleY);
+			cv::rectangle(img, cv::Point(left, top), cv::Point(right, bottom), color, 2);
+			};
+
+		// 绘制所有 ROI
+		{
+			std::lock_guard<std::mutex> lock(g_roiMutex);
+			for (auto& roi : roiList) {
+				drawRect(display, roi.rect, cv::Scalar(0, 0, 255));
+
+				std::wstring name = roi.name;
+				std::string text(name.begin(), name.end());
+				int left = int(std::min(roi.rect.left, roi.rect.right) * scaleX);
+				int top = int(std::min(roi.rect.top, roi.rect.bottom) * scaleY);
+				cv::putText(display, text, cv::Point(left, top - 5),
+					cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
+			}
+
+			// 绘制正在绘制的 ROI
+			if (roiDrawing) {
+				drawRect(display, roiRect, cv::Scalar(255, 0, 0));
+			}
+		}
+
+		// 显示到窗口
+		BITMAPINFO bi = { sizeof(BITMAPINFOHEADER), display.cols, -display.rows, 1, 32, BI_RGB };
+		StretchDIBits(hdcWindow, 0, 0, display.cols, display.rows,
+			0, 0, display.cols, display.rows,
+			display.data, &bi, DIB_RGB_COLORS, SRCCOPY);
+
+		MV_CC_FreeImageBuffer(handle, &stOutFrame);
+	}
+
+	MV_CC_StopGrabbing(handle);
+	MV_CC_CloseDevice(handle);
+	MV_CC_DestroyHandle(handle);
+	ReleaseDC(hwnd, hdcWindow);
 }
 
 // ================= 清空 ROI =================
@@ -430,34 +562,141 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case 101: // Start/Stop
 			running = !running;
 			AppendLog(running ? L"视频开始...\r\n" : L"视频停止...\r\n");
-			if (running) std::thread(VideoThread, hwndVideo).detach();
+			if (running)
+				std::thread(VideoThread, hwndVideo).detach();
 			break;
-		case 102: processMode = GRAY; AppendLog(L"灰度模式\r\n"); break;
-		case 103: processMode = BINARY; AppendLog(L"二值化模式\r\n"); break;
-		case 104: processMode = INVERT; AppendLog(L"反色模式\r\n"); break;
-		case 105: processMode = GAUSSIAN; AppendLog(L"高斯模糊模式\r\n"); break;
-		case 106: processMode = CANNY; AppendLog(L"边缘检测模式\r\n"); break;
-		case 107: // OCR
-			AppendLog(L"OCR识别按钮点击\r\n");
-			// 这里可以调用 Tesseract OCR
-			break;
-		case 108: g_flipH = !g_flipH; break; // 水平翻转
-		case 109: g_flipV = !g_flipV; break; // 垂直翻转
-		case 110: g_beta += 20; break;      // 亮度+
-		case 111: g_beta -= 20; break;      // 亮度-
-		case 112: g_alpha *= 1.1; break;    // 对比度+
-		case 113: g_alpha *= 0.9; break;    // 对比度-
 
-		case 201: SaveROITemplate(hwnd); break;
-		case 202: LoadROITemplate(hwnd); break;
-		case 205: PostQuitMessage(0); break;
-		case 301: /* 撤销逻辑 */ break;
-		case 302: /* 重做逻辑 */ break;
-		case 303: /* 复制逻辑 */ break;
-		case 304: /* 粘贴逻辑 */ break;
-		case 305:ClearROITemplate(hwnd); break;
+		case 102:
+			processMode = GRAY;
+			AppendLog(L"灰度模式\r\n");
+			break;
+
+		case 103:
+			processMode = BINARY;
+			AppendLog(L"二值化模式\r\n");
+			break;
+
+		case 104:
+			processMode = INVERT;
+			AppendLog(L"反色模式\r\n");
+			break;
+
+		case 105:
+			processMode = GAUSSIAN;
+			AppendLog(L"高斯模糊模式\r\n");
+			break;
+
+		case 106:
+			processMode = CANNY;
+			AppendLog(L"边缘检测模式\r\n");
+			break;
+
+		case 107: // OCR
+		{
+			AppendLog(L"OCR识别按钮点击\r\n");
+			cv::Mat frameCopy; { std::lock_guard<std::mutex> lock(g_frameMutex); if (g_lastFrame.empty()) { AppendLog(L"没有可用的帧进行OCR\r\n"); break; } frameCopy = g_lastFrame.clone(); }
+			std::vector<cv::Mat> roiImages = GetROIImages(frameCopy);
+			if (roiImages.empty()) roiImages.push_back(frameCopy); // 没有 ROI 就识别全图
+
+			tesseract::TessBaseAPI tess;
+			if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
+				AppendLog(L"Tesseract 初始化失败\r\n");
+				break;
+			}
+			// UTF-8 转 wchar_t（Windows 专用）
+
+			// OCR 识别 ROI 区域
+			tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
+			tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+
+			for (size_t i = 0; i < roiImages.size(); i++) {
+				cv::Mat gray;
+				cv::cvtColor(roiImages[i], gray, cv::COLOR_BGR2GRAY);
+
+				// 提高识别率：二值化 + 去噪
+				cv::threshold(gray, gray, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+				cv::resize(gray, gray, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR); // 放大2倍增强识别
+
+				// 设置图像到 Tesseract
+				tess.SetImage(gray.data, gray.cols, gray.rows, 1, gray.step);
+
+				// OCR 输出（UTF-8）
+				char* outText = tess.GetUTF8Text();
+				if (outText) {
+					std::string utf8Text(outText);
+					std::wstring wtext = Utf8ToWstring(utf8Text);  // ✅ 这里定义 wtext
+
+					// 正确输出
+					AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
+					AppendLog(wtext + L"\r\n");   // ✅ 使用 wtext，而不是 outText
+
+					delete[] outText;
+				}
+			}
+
+			tess.End();
+		}
+		break;
+
+		case 108:
+			g_flipH = !g_flipH;
+			break;
+
+		case 109:
+			g_flipV = !g_flipV;
+			break;
+
+		case 110:
+			g_beta += 20;
+			break;      // 亮度+
+
+		case 111:
+			g_beta -= 20;
+			break;      // 亮度-
+
+		case 112:
+			g_alpha *= 1.1;
+			break;      // 对比度+
+
+		case 113:
+			g_alpha *= 0.9;
+			break;      // 对比度-
+
+		case 201:
+			SaveROITemplate(hwnd);
+			break;
+
+		case 202:
+			LoadROITemplate(hwnd);
+			break;
+
+		case 205:
+			PostQuitMessage(0);
+			break;
+
+		case 301:
+			/* 撤销逻辑 */
+			break;
+
+		case 302:
+			/* 重做逻辑 */
+			break;
+
+		case 303:
+			/* 复制逻辑 */
+			break;
+
+		case 304:
+			/* 粘贴逻辑 */
+			break;
+
+		case 305:
+			ClearROITemplate(hwnd);
+			break;
 		}
 	}
+	break;
+
 	break;
 
 	case WM_DRAWITEM:

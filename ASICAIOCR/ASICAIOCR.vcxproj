@@ -71,7 +71,7 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>C:\Program Files\Tesseract-OCR\include\leptonica;C:\Program Files\Tesseract-OCR\include;D:\software_install\opencv\opencv4.12\opencv\build\include;$(IncludePath)</IncludePath>
+    <IncludePath>D:\software_install\MVS\MVS\Development\Includes;C:\Program Files\Tesseract-OCR\include\leptonica;C:\Program Files\Tesseract-OCR\include;D:\software_install\opencv\opencv4.12\opencv\build\include;$(IncludePath)</IncludePath>
     <LibraryPath>D:\software_install\opencv\opencv4.12\opencv\build\x64\vc16\lib;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
@@ -110,8 +110,8 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>D:\software_install\opencv\opencv4.12\opencv\build\x64\vc16\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>opencv_world4120d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>D:\software_install\MVS\MVS\Development\Libraries\win64;D:\software_install\opencv\opencv4.12\opencv\build\x64\vc16\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>opencv_world4120d.lib;MvCameraControl.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

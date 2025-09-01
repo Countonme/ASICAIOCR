@@ -132,8 +132,11 @@
     <ClInclude Include="ASICAIOCR.h" />
     <ClInclude Include="FileLogger.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="LoadLibraryWithDetailedError.h" />
+    <ClInclude Include="ModernToast.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="ROIManager.h" />
+    <ClInclude Include="SajectWrapper.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
@@ -142,7 +145,10 @@
       <AdditionalUsingDirectories Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\software_install\opencv\opencv4.12\opencv\build\x64\vc16\lib;%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
     </ClCompile>
     <ClCompile Include="FileLogger.cpp" />
+    <ClCompile Include="LoadLibraryWithDetailedError.cpp" />
+    <ClCompile Include="ModernToast.cpp" />
     <ClCompile Include="ROIManager.cpp" />
+    <ClCompile Include="SajectWrapper.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="ASICAIOCR.rc" />

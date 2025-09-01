@@ -14,9 +14,20 @@
 #include <leptonica/allheaders.h>
 #include <mutex>
 std::mutex g_roiMutex;  // 用于保护 roiList 的访问
-
+//MES
+#include "SajectWrapper.h"
+#include "ModernToast.h"
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "opencv_world4120d.lib") // 改成你实际的 OpenCV lib
+
+#include <iostream>
+
+// 全局声明 系统弹窗
+ModernToast* g_pToast = nullptr;
+// OCR 引擎
+tesseract::TessBaseAPI tess;
+// 全局定义
+cv::Mat g_lastProcessedFrame; // 处理后的帧，用于 OCR
 
 // 全局控件
 HWND hwndVideo, hwndLog;
@@ -35,7 +46,7 @@ hwndBtnFlipH,// 水平翻转按钮
 hwndBtnFlipV;// 垂直翻转按钮
 
 std::atomic<bool> running{ false };
-
+SajectConnect mes;
 enum ProcessMode { ORIGIN = 0, GRAY, BINARY, INVERT, GAUSSIAN, CANNY };
 std::atomic<ProcessMode> processMode{ ORIGIN };
 double g_alpha = 1.0; // 对比度
@@ -103,8 +114,51 @@ std::vector<cv::Mat> GetROIImages(const cv::Mat& frame) {
 // ================= 程序入口 =================
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
-	INITCOMMONCONTROLSEX icex = { sizeof(INITCOMMONCONTROLSEX), ICC_STANDARD_CLASSES };
-	InitCommonControlsEx(&icex);
+	if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
+		AppendLog(L"Tesseract 初始化失败\r\n");
+		MessageBoxW(
+			nullptr,
+			L"Tesseract 初始化失败\r\n",
+			L"OCR 初始化失败",
+			MB_OK | MB_ICONINFORMATION
+		);
+	}
+	// UTF-8 转 wchar_t（Windows 专用）
+
+	// OCR 识别 ROI 区域
+	tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
+	tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+	//// 1. 获取当前可执行文件的完整路径
+	//wchar_t exePath[MAX_PATH] = { 0 };
+	//GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
+	//// 2. 转成 std::wstring 方便操作
+	//std::wstring pathW(exePath);
+
+	//// 3. 可选：只获取目录（不含文件名）
+	//// std::wstring dir = pathW.substr(0, pathW.find_last_of(L"\\/"));
+
+	//// 4. 弹出消息框显示路径
+	//MessageBoxW(
+	//	nullptr,
+	//	pathW.c_str(),                    // 显示完整路径
+	//	L"程序执行路径",                   // 标题
+	//	MB_OK | MB_ICONINFORMATION
+	//);
+	//// 初始化（加载 DLL）
+	//if (!mes.Initialize("SajetConnect.dll")) {  // 注意：字符串前加 L 表示宽字符
+	//	// 弹出错误对话框
+	//	MessageBoxW(nullptr, L"初始化 SajectConnect 失败！", L"错误", MB_OK | MB_ICONERROR);
+	//	return -1;
+	//}
+
+	//// 调用流程
+	//if (!mes.SajetTransStart()) {
+	//	MessageBoxW(nullptr, L"SajetTransStart 失败！", L"错误", MB_OK | MB_ICONERROR);
+	//	return -1;
+	//}
+	//INITCOMMONCONTROLSEX icex = { sizeof(INITCOMMONCONTROLSEX), ICC_STANDARD_CLASSES };
+	//InitCommonControlsEx(&icex);
 
 	WNDCLASS wc = {};
 	wc.lpfnWndProc = WndProc;
@@ -198,6 +252,16 @@ BOOL InitControls(HINSTANCE hInstance, HWND hWnd)
 		0, 0, 0, 0,
 		hWnd, (HMENU)111, hInstance, nullptr);
 
+	hwndBtnContrastUp = CreateWindow(L"BUTTON", L"对比度+",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
+		0, 0, 0, 0,
+		hWnd, (HMENU)112, hInstance, nullptr);
+
+	hwndBtnContrastDown = CreateWindow(L"BUTTON", L"对比度-",
+		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
+		0, 0, 0, 0,
+		hWnd, (HMENU)113, hInstance, nullptr);
+
 	hwndLog = CreateWindow(L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | WS_BORDER |
 		ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_VSCROLL | ES_READONLY,
@@ -282,7 +346,7 @@ void AppendLog(const std::wstring& msg)
 }
 
 // ================= 视频Opencv  =================
-void VideoThreadForOpenCV(HWND hwnd)
+void VideoThreadOpenCV(HWND hwnd)
 {
 	cv::VideoCapture cap(0);
 	if (!cap.isOpened())
@@ -350,7 +414,8 @@ void VideoThreadForOpenCV(HWND hwnd)
 }
 
 //###########海康USB 相机##############
-void VideoThread(HWND hwnd)
+
+void VideoThreadHk(HWND hwnd)
 {
 	int nRet = MV_OK;
 	void* handle = nullptr;
@@ -386,14 +451,10 @@ void VideoThread(HWND hwnd)
 			CV_8UC1, stOutFrame.pBufAddr);
 		cv::cvtColor(img, frame, cv::COLOR_BayerBG2BGR);
 
-		{
-			std::lock_guard<std::mutex> lock(g_frameMutex);
-			g_lastFrame = frame.clone();
-		}
-
 		// 图像处理
 		if (g_flipH) cv::flip(frame, frame, 1);
 		if (g_flipV) cv::flip(frame, frame, 0);
+
 		switch (processMode)
 		{
 		case 1: cv::cvtColor(frame, frame, cv::COLOR_BGR2GRAY); break;
@@ -402,7 +463,14 @@ void VideoThread(HWND hwnd)
 		case 4: cv::GaussianBlur(frame, frame, cv::Size(5, 5), 0); break;
 		case 5: cv::Canny(frame, frame, 50, 150); break;
 		}
+
 		frame.convertTo(frame, -1, g_alpha, g_beta);
+
+		// 保存处理后的图像给 OCR 用
+		{
+			std::lock_guard<std::mutex> lock(g_frameMutex);
+			g_lastProcessedFrame = frame.clone(); // ✅ OCR 用
+		}
 
 		// 获取窗口客户区大小
 		RECT rc; GetClientRect(hwnd, &rc);
@@ -414,15 +482,11 @@ void VideoThread(HWND hwnd)
 		cv::resize(frame, display, cv::Size(winW, winH));
 		cv::cvtColor(display, display, cv::COLOR_BGR2BGRA);
 
-		// 缩放比例，用于从原图 ROI 转到显示坐标
-		double scaleX = double(winW) / frame.cols;
-		double scaleY = double(winH) / frame.rows;
-
 		auto drawRect = [&](cv::Mat& img, const RECT& r, const cv::Scalar& color) {
-			int left = int(std::min(r.left, r.right) * scaleX);
-			int right = int(std::max(r.left, r.right) * scaleX);
-			int top = int(std::min(r.top, r.bottom) * scaleY);
-			int bottom = int(std::max(r.top, r.bottom) * scaleY);
+			int left = int(std::min(r.left, r.right));
+			int right = int(std::max(r.left, r.right));
+			int top = int(std::min(r.top, r.bottom));
+			int bottom = int(std::max(r.top, r.bottom));
 			cv::rectangle(img, cv::Point(left, top), cv::Point(right, bottom), color, 2);
 			};
 
@@ -434,8 +498,8 @@ void VideoThread(HWND hwnd)
 
 				std::wstring name = roi.name;
 				std::string text(name.begin(), name.end());
-				int left = int(std::min(roi.rect.left, roi.rect.right) * scaleX);
-				int top = int(std::min(roi.rect.top, roi.rect.bottom) * scaleY);
+				int left = int(std::min(roi.rect.left, roi.rect.right));
+				int top = int(std::min(roi.rect.top, roi.rect.bottom));
 				cv::putText(display, text, cv::Point(left, top - 5),
 					cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 1);
 			}
@@ -563,7 +627,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			running = !running;
 			AppendLog(running ? L"视频开始...\r\n" : L"视频停止...\r\n");
 			if (running)
-				std::thread(VideoThread, hwndVideo).detach();
+
+				std::thread(VideoThreadOpenCV, hwndVideo).detach();
+			//std::thread(VideoThreadHk, hwndVideo).detach();
 			break;
 
 		case 102:
@@ -594,48 +660,75 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case 107: // OCR
 		{
 			AppendLog(L"OCR识别按钮点击\r\n");
-			cv::Mat frameCopy; { std::lock_guard<std::mutex> lock(g_frameMutex); if (g_lastFrame.empty()) { AppendLog(L"没有可用的帧进行OCR\r\n"); break; } frameCopy = g_lastFrame.clone(); }
-			std::vector<cv::Mat> roiImages = GetROIImages(frameCopy);
-			if (roiImages.empty()) roiImages.push_back(frameCopy); // 没有 ROI 就识别全图
 
-			tesseract::TessBaseAPI tess;
-			if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
-				AppendLog(L"Tesseract 初始化失败\r\n");
-				break;
+			// 克隆当前处理后的帧
+			cv::Mat frameCopy;
+			{
+				std::lock_guard<std::mutex> lock(g_frameMutex);
+				if (g_lastProcessedFrame.empty()) {
+					AppendLog(L"没有可用的帧进行OCR\r\n");
+					break;
+				}
+				frameCopy = g_lastProcessedFrame.clone();
 			}
-			// UTF-8 转 wchar_t（Windows 专用）
 
-			// OCR 识别 ROI 区域
-			tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
-			tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+			// 获取 ROI 图像，如果没有 ROI 就用全图
+			std::vector<cv::Mat> roiImages = GetROIImages(frameCopy);
+			if (roiImages.empty()) roiImages.push_back(frameCopy); // 没有 ROI 就用全图
 
 			for (size_t i = 0; i < roiImages.size(); i++) {
+				cv::Mat roi = roiImages[i].clone();
+
+				// 灰度化
 				cv::Mat gray;
-				cv::cvtColor(roiImages[i], gray, cv::COLOR_BGR2GRAY);
+				cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
 
-				// 提高识别率：二值化 + 去噪
-				cv::threshold(gray, gray, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-				cv::resize(gray, gray, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR); // 放大2倍增强识别
+				// 自适应二值化
+				cv::adaptiveThreshold(gray, gray, 255,
+					cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+					cv::THRESH_BINARY, 25, 15);
+				if (cv::mean(gray)[0] > 127) cv::bitwise_not(gray, gray);
 
-				// 设置图像到 Tesseract
+				// --- 调试: 显示 ROI 内容 ---
+				//std::string winName = "ROI Debug " + std::to_string(i + 1);
+				//cv::imshow(winName, gray);
+				//cv::waitKey(1);  // 刷新显示
+				// 或者保存为文件：cv::imwrite("roi_" + std::to_string(i+1) + ".png", gray);
+
+				// OCR
 				tess.SetImage(gray.data, gray.cols, gray.rows, 1, gray.step);
+				tess.Recognize(0);
 
-				// OCR 输出（UTF-8）
-				char* outText = tess.GetUTF8Text();
-				if (outText) {
-					std::string utf8Text(outText);
-					std::wstring wtext = Utf8ToWstring(utf8Text);  // ✅ 这里定义 wtext
+				tesseract::ResultIterator* ri = tess.GetIterator();
+				tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
 
-					// 正确输出
-					AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
-					AppendLog(wtext + L"\r\n");   // ✅ 使用 wtext，而不是 outText
+				AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
 
-					delete[] outText;
+				if (ri != nullptr) {
+					do {
+						const char* line = ri->GetUTF8Text(level);
+						if (line) {
+							std::wstring wline = Utf8ToWstring(line);
+							AppendLog(wline + L"\r\n");
+						}
+
+						int x1, y1, x2, y2;
+						if (ri->BoundingBox(level, &x1, &y1, &x2, &y2)) {
+							x1 = std::max(0, x1); y1 = std::max(0, y1);
+							x2 = std::min(roi.cols - 1, x2);
+							y2 = std::min(roi.rows - 1, y2);
+							cv::rectangle(roi, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 0, 255), 2);
+						}
+					} while (ri->Next(level));
 				}
-			}
 
-			tess.End();
+				// 可选：把带框的 ROI 显示在调试窗口
+				cv::imshow("OCR Result ROI " + std::to_string(i + 1), roi);
+				cv::waitKey(1);
+			}
 		}
+		break;
+
 		break;
 
 		case 108:
@@ -728,16 +821,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			roiRect.top = std::min<int>(ptStart.y, y);
 			roiRect.right = std::max<int>(ptStart.x, x);
 			roiRect.bottom = std::max<int>(ptStart.y, y);
+			InvalidateRect(hwndVideo, nullptr, FALSE); // 刷新绘制
 		}
 		break;
 
 	case WM_LBUTTONUP:
 		if (roiDrawing) {
 			roiDrawing = false;
-			ROI roi; roi.rect = roiRect;
-			roi.name = L"ROI" + std::to_wstring(roiList.size() + 1);
-			roiList.push_back(roi);
-			AppendLog(L"添加 ROI: " + roi.name + L"\r\n");
+			if (roiRect.right - roiRect.left > 10 && roiRect.bottom - roiRect.top > 10) {
+				ROI roi;
+				roi.rect = roiRect;
+				roi.name = L"ROI" + std::to_wstring(roiList.size() + 1);
+				roiList.push_back(roi);
+				AppendLog(L"新建 ROI: " + roi.name + L"\r\n");
+			}
 		}
 		break;
 

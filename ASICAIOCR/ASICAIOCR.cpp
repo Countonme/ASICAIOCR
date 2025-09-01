@@ -13,9 +13,10 @@
 #include <tesseract/baseapi.h>
 #include <leptonica/allheaders.h>
 #include <mutex>
-std::mutex g_roiMutex;  // 用于保护 roiList 的访问
+
 //MES
 #include "SajectWrapper.h"
+//弹窗
 #include "ModernToast.h"
 #pragma comment(lib, "Comctl32.lib")
 #pragma comment(lib, "opencv_world4120d.lib") // 改成你实际的 OpenCV lib
@@ -26,12 +27,15 @@ std::mutex g_roiMutex;  // 用于保护 roiList 的访问
 ModernToast* g_pToast = nullptr;
 // OCR 引擎
 tesseract::TessBaseAPI tess;
-// 全局定义
-cv::Mat g_lastProcessedFrame; // 处理后的帧，用于 OCR
-
+// 全局定义 ->处理后的帧，用于 OCR
+cv::Mat g_lastProcessedFrame;
+// 用于保护 roiList 的访问
+std::mutex g_roiMutex;
 // 全局控件
-HWND hwndVideo, hwndLog;
-HWND hwndBtnStart,
+HWND hwndVideo, //视频流
+//hwndVideo1,     //图像处理窗口
+hwndLog,        //日志窗口
+hwndBtnStart, //相机启动按钮
 hwndBtnGray,// 灰度按钮
 hwndBtnBinary,// 二值化按钮
 hwndBtnInvert,// 反色按钮
@@ -46,6 +50,7 @@ hwndBtnFlipH,// 水平翻转按钮
 hwndBtnFlipV;// 垂直翻转按钮
 
 std::atomic<bool> running{ false };
+//Saject MES
 SajectConnect mes;
 enum ProcessMode { ORIGIN = 0, GRAY, BINARY, INVERT, GAUSSIAN, CANNY };
 std::atomic<ProcessMode> processMode{ ORIGIN };
@@ -57,16 +62,24 @@ bool g_flipV = false;
 cv::Mat g_lastFrame;
 std::mutex g_frameMutex;
 
-// ROI
+// ROI 结构体
 struct ROI {
 	RECT rect;
 	std::wstring name;
 };
+/// <summary>
+/// ROI 列表
+/// </summary>
 std::vector<ROI> roiList;
 RECT roiRect = { 0,0,0,0 };
 bool roiDrawing = false;
 POINT ptStart = { 0,0 };
-// UTF-8 转 wchar_t（Windows 专用）
+
+/// <summary>
+/// UTF-8 转 wchar_t（Windows 专用）
+/// </summary>
+/// <param name="str"></param>
+/// <returns></returns>
 std::wstring Utf8ToWstring(const std::string& str)
 {
 	if (str.empty()) return L"";
@@ -85,19 +98,67 @@ const int LOG_HEIGHT = 180;
 const int BTN_HEIGHT = 40;
 const int MARGIN = 10;
 
-// 函数声明
+/// <summary>
+/// 函数声明
+/// </summary>
+/// <param name="">HWND</param>
+/// <param name="">UINT</param>
+/// <param name="">WPARAM</param>
+/// <param name="">LPARAM</param>
+/// <returns></returns>
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+/// <summary>
+/// 系统日志
+/// </summary>
+/// <param name="msg"></param>
 void AppendLog(const std::wstring& msg);
-void VideoThread(HWND hwnd);
+/// <summary>
+/// OpenCV 本地相机
+/// </summary>
+/// <param name="hwnd"></param>
+void VideoThreadOpenCV(HWND hwnd);
+/// <summary>
+///海康相机
+/// </summary>
+/// <param name="hwnd"></param>
+void VideoThreadHK(HWND hwnd);
+/// <summary>
+/// 初始化
+/// </summary>
+/// <param name="hInstance"></param>
+/// <param name="hWnd"></param>
+/// <returns></returns>
 BOOL InitControls(HINSTANCE hInstance, HWND hWnd);
+/// <summary>
+/// 绘制按钮
+/// </summary>
+/// <param name="hwnd"></param>
+/// <param name="hdc"></param>
 void DrawButton(HWND hwnd, HDC hdc);
+/// <summary>
+/// 系统大小改变
+/// </summary>
+/// <param name="hwnd"></param>
 void ResizeControls(HWND hwnd);
+/// <summary>
+/// 保存ROI
+/// </summary>
+/// <param name="hwnd"></param>
 void SaveROITemplate(HWND hwnd);
+/// <summary>
+/// 加载ROI
+/// </summary>
+/// <param name="hwnd"></param>
 void LoadROITemplate(HWND hwnd);
+/// <summary>
+/// 输入框
+/// </summary>
+/// <param name="hwnd"></param>
+/// <param name="prompt"></param>
+/// <returns></returns>
 std::wstring InputBox(HWND hwnd, const std::wstring& prompt);
 
-// ====== 新增 ======
-// 获取当前 ROI 内的图像
+///获取当前 ROI 内的图像
 std::vector<cv::Mat> GetROIImages(const cv::Mat& frame) {
 	std::vector<cv::Mat> result;
 	for (auto& roi : roiList) {
@@ -110,10 +171,17 @@ std::vector<cv::Mat> GetROIImages(const cv::Mat& frame) {
 	}
 	return result;
 }
-
-// ================= 程序入口 =================
+/// <summary>
+/// ================= 程序入口 =================
+/// </summary>
+/// <param name="hInstance"></param>
+/// <param name=""></param>
+/// <param name=""></param>
+/// <param name="nCmdShow"></param>
+/// <returns></returns>
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+	///初始化OCR 模组
 	if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
 		AppendLog(L"Tesseract 初始化失败\r\n");
 		MessageBoxW(
@@ -123,11 +191,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 			MB_OK | MB_ICONINFORMATION
 		);
 	}
-	// UTF-8 转 wchar_t（Windows 专用）
 
 	// OCR 识别 ROI 区域
 	tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
 	tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+
 	//// 1. 获取当前可执行文件的完整路径
 	//wchar_t exePath[MAX_PATH] = { 0 };
 	//GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -169,7 +237,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 
 	RegisterClass(&wc);
 
-	RECT rc = { 0,0,1024,768 };
+	RECT rc = { 0,0,1048,768 };
 	AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
 	HWND hwnd = CreateWindowEx(0, L"VideoApp", L"自动化 AI OCR ",
@@ -192,10 +260,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 // ================= 控件初始化 =================
 BOOL InitControls(HINSTANCE hInstance, HWND hWnd)
 {
-	hwndVideo = CreateWindow(L"STATIC", L"",
+	hwndVideo = CreateWindow(L"STATIC", L"视频流",
 		WS_CHILD | WS_VISIBLE | SS_BLACKRECT,
 		0, 0, VIDEO_WIDTH, VIDEO_HEIGHT,
 		hWnd, nullptr, hInstance, nullptr);
+
+	//hwndVideo1 = CreateWindow(L"STATICVideo", L"图像比对",
+	//	WS_CHILD | WS_VISIBLE | SS_BLACKRECT,
+	//	2, 2, VIDEO_WIDTH, VIDEO_HEIGHT,
+	//	hWnd, nullptr, hInstance, nullptr);
 
 	hwndBtnStart = CreateWindow(L"BUTTON", L"Start/Stop",
 		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
@@ -321,11 +394,16 @@ void ResizeControls(HWND hwnd)
 	MoveWindow(hwndLog, 0, height - LOG_HEIGHT, width, LOG_HEIGHT, TRUE);
 }
 
-// ================= 按钮绘制美化 =================
+/// <summary>
+///  ================= 按钮绘制美化 =================
+/// </summary>
+/// <param name="hwnd">hwnd</param>
+/// <param name="hdc">hdc</param>
 void DrawButton(HWND hwnd, HDC hdc)
 {
 	RECT rc; GetClientRect(hwnd, &rc);
 	//按钮背景颜色
+	//LITEON 松石绿 主题
 	HBRUSH brush = CreateSolidBrush(RGB(148, 200, 150));
 	FillRect(hdc, &rc, brush);
 	DeleteObject(brush);
@@ -337,7 +415,10 @@ void DrawButton(HWND hwnd, HDC hdc)
 	DrawText(hdc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
-// ================= 日志输出 =================
+/// <summary>
+///  ================= 日志输出 =================
+/// </summary>
+/// <param name="msg"></param>
 void AppendLog(const std::wstring& msg)
 {
 	int len = GetWindowTextLength(hwndLog);
@@ -345,7 +426,10 @@ void AppendLog(const std::wstring& msg)
 	SendMessage(hwndLog, EM_REPLACESEL, FALSE, (LPARAM)msg.c_str());
 }
 
-// ================= 视频Opencv  =================
+/// <summary>
+///  ================= 基于视频Opencv  =================
+/// </summary>
+/// <param name="hwnd"></param>
 void VideoThreadOpenCV(HWND hwnd)
 {
 	cv::VideoCapture cap(0);
@@ -381,6 +465,15 @@ void VideoThreadOpenCV(HWND hwnd)
 		case CANNY: { cv::Mat gray, edges; cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY); cv::Canny(gray, edges, 50, 150); cv::cvtColor(edges, frame, cv::COLOR_GRAY2BGR); } break;
 		}
 
+		// 保存处理后的图像给 OCR 用
+	// ... 在处理完 frame 之后 ...
+
+// 将原始帧和处理后的帧同时安全地保存到共享变量
+		{
+			//std::lock_guard<std::mutex> lock(g_frameMutex);
+			g_lastProcessedFrame = frame.clone();  // 保存给 OCR 使用
+		} // 锁在此处自动释放
+
 		// 绘制所有 ROI
 		for (auto& roi : roiList) {
 			cv::rectangle(frame, cv::Point(roi.rect.left, roi.rect.top),
@@ -413,7 +506,10 @@ void VideoThreadOpenCV(HWND hwnd)
 	ReleaseDC(hwnd, hdc);
 }
 
-//###########海康USB 相机##############
+/// <summary>
+/// ###########海康USB 相机##############
+/// </summary>
+/// <param name="hwnd"></param>
 
 void VideoThreadHk(HWND hwnd)
 {
@@ -525,7 +621,10 @@ void VideoThreadHk(HWND hwnd)
 	ReleaseDC(hwnd, hdcWindow);
 }
 
-// ================= 清空 ROI =================
+/// <summary>
+/// ================= 清空 ROI =================
+/// </summary>
+/// <param name="hwnd"></param>
 void ClearROITemplate(HWND hwnd)
 {
 	roiList.clear();          // 清空所有 ROI
@@ -533,7 +632,10 @@ void ClearROITemplate(HWND hwnd)
 	InvalidateRect(hwndVideo, nullptr, TRUE); // 立即刷新视频窗口，去掉残留矩形
 }
 
-// ================= ROI 保存/加载 =================
+/// <summary>
+/// ================= ROI 保存/加载 =================
+/// </summary>
+/// <param name="hwnd"></param>
 void SaveROITemplate(HWND hwnd) {
 	wchar_t filename[MAX_PATH] = L"roi_template.txt";
 	OPENFILENAME ofn = { sizeof(ofn) };
@@ -553,7 +655,10 @@ void SaveROITemplate(HWND hwnd) {
 		AppendLog(L"ROI 模板已保存\r\n");
 	}
 }
-
+/// <summary>
+/// 加载ROI Temp
+/// </summary>
+/// <param name="hwnd"></param>
 void LoadROITemplate(HWND hwnd) {
 	wchar_t filename[MAX_PATH] = L"";
 	OPENFILENAME ofn = { sizeof(ofn) };
@@ -576,7 +681,14 @@ void LoadROITemplate(HWND hwnd) {
 	}
 }
 
-// ================= 窗口过程 =================
+/// <summary>
+/// ================= 窗口过程 =================
+/// </summary>
+/// <param name="hwnd"></param>
+/// <param name="msg"></param>
+/// <param name="wParam"></param>
+/// <param name="lParam"></param>
+/// <returns></returns>
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	switch (msg)
@@ -790,8 +902,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	}
 	break;
 
-	break;
-
 	case WM_DRAWITEM:
 	{
 		LPDRAWITEMSTRUCT lpdis = (LPDRAWITEMSTRUCT)lParam;
@@ -802,7 +912,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_LBUTTONDOWN:
 	{
 		POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-		RECT rcVideo; GetWindowRect(hwndVideo, &rcVideo);
+		RECT rcVideo;
+		GetWindowRect(hwndVideo, &rcVideo);
 		MapWindowPoints(nullptr, hwnd, (LPPOINT)&rcVideo, 2);
 
 		if (PtInRect(&rcVideo, pt)) {
@@ -821,7 +932,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			roiRect.top = std::min<int>(ptStart.y, y);
 			roiRect.right = std::max<int>(ptStart.x, x);
 			roiRect.bottom = std::max<int>(ptStart.y, y);
-			InvalidateRect(hwndVideo, nullptr, FALSE); // 刷新绘制
+			//InvalidateRect(hwndVideo, nullptr, FALSE); // 刷新绘制
 		}
 		break;
 
@@ -841,8 +952,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	case WM_RBUTTONDOWN:
 	{
 		POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-		RECT rcVideo; GetWindowRect(hwndVideo, &rcVideo);
-		MapWindowPoints(nullptr, hwnd, (LPPOINT)&rcVideo, 2);
+		RECT rcVideo;
+		GetWindowRect(hwndVideo, &rcVideo);
 
 		// 判断是否点击在已有 ROI 内
 		auto it = std::find_if(roiList.begin(), roiList.end(),

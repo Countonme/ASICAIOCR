@@ -31,23 +31,6 @@ tesseract::TessBaseAPI tess;
 cv::Mat g_lastProcessedFrame;
 // 用于保护 roiList 的访问
 std::mutex g_roiMutex;
-// 全局控件
-HWND hwndVideo, //视频流
-//hwndVideo1,     //图像处理窗口
-hwndLog,        //日志窗口
-hwndBtnStart, //相机启动按钮
-hwndBtnGray,// 灰度按钮
-hwndBtnBinary,// 二值化按钮
-hwndBtnInvert,// 反色按钮
-hwndBtnGaussian,// 高斯模糊按钮
-hwndBtnCanny,// 图像处理按钮
-hwndBtnOCR, //OCR 按钮
-hwndBtnBrightUp,// 亮度按钮
-hwndBtnBrightDown,// 亮度按钮
-hwndBtnContrastUp,// 亮度对比度按钮
-hwndBtnContrastDown,// 亮度对比度按钮
-hwndBtnFlipH,// 水平翻转按钮
-hwndBtnFlipV;// 垂直翻转按钮
 
 std::atomic<bool> running{ false };
 //Saject MES
@@ -97,6 +80,11 @@ const int RIGHT_WIDTH = 200;
 const int LOG_HEIGHT = 180;
 const int BTN_HEIGHT = 40;
 const int MARGIN = 10;
+
+// 全局控件
+HWND hwndVideo, //视频流
+hwndVideo1,     //图像处理窗口
+hwndLog;        //日志窗口
 
 /// <summary>
 /// 函数声明
@@ -150,6 +138,32 @@ void SaveROITemplate(HWND hwnd);
 /// </summary>
 /// <param name="hwnd"></param>
 void LoadROITemplate(HWND hwnd);
+
+/// <summary>
+/// OCR 处理模块
+/// </summary>
+//void OCRWith();
+/// <summary>
+/// 清空日志
+/// </summary>
+//void ClearLog();
+
+/// <summary>
+/// 创建按钮与Layout
+/// </summary>
+/// <param name="hwnd"></param>
+void CreateMenuandLayout(HWND hwnd);
+
+/// <summary>
+/// 按钮事件处理
+/// </summary>
+/// <param name="hwnd"></param>
+/// <param name="msg"></param>
+/// <param name="wParam"></param>
+/// <param name="lParam"></param>
+/// <returns></returns>
+int ButtonEventWithForWM_COMMAND(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 /// <summary>
 /// 输入框
 /// </summary>
@@ -181,20 +195,23 @@ std::vector<cv::Mat> GetROIImages(const cv::Mat& frame) {
 /// <returns></returns>
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
-	///初始化OCR 模组
-	if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
-		AppendLog(L"Tesseract 初始化失败\r\n");
-		MessageBoxW(
-			nullptr,
-			L"Tesseract 初始化失败\r\n",
-			L"OCR 初始化失败",
-			MB_OK | MB_ICONINFORMATION
-		);
-	}
+	// 初始化OCR 模组
+	// 后台线程初始化 OCR
+	std::thread([]() {
+		if (tess.Init("C:/Program Files/Tesseract-OCR/tessdata", "eng+chi_sim")) {
+			MessageBoxW(nullptr, L"Tesseract 初始化失败\r\n", L"OCR 初始化失败", MB_OK | MB_ICONINFORMATION);
+		}
+		// OCR 识别 ROI 区域
+		tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
+		tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+		}).detach();
+	//tess.SetVariable("tessedit_char_whitelist",
+	//	"0123456789.VA=⎓");  // 同时允许 = 和 ⎓
 
-	// OCR 识别 ROI 区域
-	tess.SetPageSegMode(tesseract::PSM_SINGLE_BLOCK); // 单行/单块文字模式，可改成 PSM_AUTO
-	tess.SetVariable("tessedit_char_blacklist", "|"); // 可选：去掉干扰字符
+	//tess.SetVariable("tessedit_char_whitelist",
+	//	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	//	":.~"
+	//	"⎓⎍"); // 添加直流符号
 
 	//// 1. 获取当前可执行文件的完整路径
 	//wchar_t exePath[MAX_PATH] = { 0 };
@@ -207,12 +224,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	//// std::wstring dir = pathW.substr(0, pathW.find_last_of(L"\\/"));
 
 	//// 4. 弹出消息框显示路径
-	//MessageBoxW(
-	//	nullptr,
-	//	pathW.c_str(),                    // 显示完整路径
-	//	L"程序执行路径",                   // 标题
-	//	MB_OK | MB_ICONINFORMATION
-	//);
+	MessageBoxW(
+		nullptr,
+		L"",                    // 显示完整路径
+		L"程序执行路径",                   // 标题
+		MB_OK | MB_ICONINFORMATION
+	);
 	//// 初始化（加载 DLL）
 	//if (!mes.Initialize("SajetConnect.dll")) {  // 注意：字符串前加 L 表示宽字符
 	//	// 弹出错误对话框
@@ -235,9 +252,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = CreateSolidBrush(RGB(48, 197, 195)); // 松石绿
 
-	RegisterClass(&wc);
+	WNDCLASS wc2 = {};
+	wc2.lpfnWndProc = DefWindowProc; // 或者你自己写的 WndProc
+	wc2.hInstance = hInstance;
+	wc2.lpszClassName = L"STATICVideo";
+	wc2.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wc2.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
-	RECT rc = { 0,0,1048,768 };
+	RegisterClass(&wc);
+	RegisterClass(&wc2);
+	//默认窗体大小
+	RECT rc = { 0,0,1288,768 };
 	AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
 	HWND hwnd = CreateWindowEx(0, L"VideoApp", L"自动化 AI OCR ",
@@ -265,75 +290,10 @@ BOOL InitControls(HINSTANCE hInstance, HWND hWnd)
 		0, 0, VIDEO_WIDTH, VIDEO_HEIGHT,
 		hWnd, nullptr, hInstance, nullptr);
 
-	//hwndVideo1 = CreateWindow(L"STATICVideo", L"图像比对",
-	//	WS_CHILD | WS_VISIBLE | SS_BLACKRECT,
-	//	2, 2, VIDEO_WIDTH, VIDEO_HEIGHT,
-	//	hWnd, nullptr, hInstance, nullptr);
-
-	hwndBtnStart = CreateWindow(L"BUTTON", L"Start/Stop",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)101, hInstance, nullptr);
-
-	hwndBtnGray = CreateWindow(L"BUTTON", L"灰度",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)102, hInstance, nullptr);
-
-	hwndBtnBinary = CreateWindow(L"BUTTON", L"二值化",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)103, hInstance, nullptr);
-
-	hwndBtnInvert = CreateWindow(L"BUTTON", L"反色",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)104, hInstance, nullptr);
-
-	hwndBtnGaussian = CreateWindow(L"BUTTON", L"高斯模糊",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)105, hInstance, nullptr);
-
-	hwndBtnCanny = CreateWindow(L"BUTTON", L"边缘检测",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)106, hInstance, nullptr);
-
-	hwndBtnOCR = CreateWindow(L"BUTTON", L"OCR识别",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)107, hInstance, nullptr);
-
-	hwndBtnFlipH = CreateWindow(L"BUTTON", L"水平翻转",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)108, hInstance, nullptr);
-
-	hwndBtnFlipV = CreateWindow(L"BUTTON", L"垂直翻转",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)109, hInstance, nullptr);
-
-	hwndBtnBrightUp = CreateWindow(L"BUTTON", L"亮度+",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)110, hInstance, nullptr);
-
-	hwndBtnBrightDown = CreateWindow(L"BUTTON", L"亮度-",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)111, hInstance, nullptr);
-
-	hwndBtnContrastUp = CreateWindow(L"BUTTON", L"对比度+",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)112, hInstance, nullptr);
-
-	hwndBtnContrastDown = CreateWindow(L"BUTTON", L"对比度-",
-		WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_FLAT,
-		0, 0, 0, 0,
-		hWnd, (HMENU)113, hInstance, nullptr);
+	hwndVideo1 = CreateWindow(L"STATICVideo", L"图像比对",
+		WS_CHILD | WS_VISIBLE | SS_BLACKRECT,
+		VIDEO_WIDTH + 4, 2, VIDEO_WIDTH, VIDEO_HEIGHT,
+		hWnd, nullptr, hInstance, nullptr);
 
 	hwndLog = CreateWindow(L"EDIT", L"",
 		WS_CHILD | WS_VISIBLE | WS_BORDER |
@@ -346,20 +306,6 @@ BOOL InitControls(HINSTANCE hInstance, HWND hWnd)
 		CLEARTYPE_QUALITY, VARIABLE_PITCH, L"Consolas");
 	SendMessage(hwndLog, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-	for (HWND btn : {
-		hwndBtnStart,
-			hwndBtnGray,
-			hwndBtnBinary,
-			hwndBtnInvert,
-			hwndBtnGaussian,
-			hwndBtnCanny,
-			hwndBtnOCR,
-			hwndBtnFlipH,
-			hwndBtnFlipV,
-			hwndBtnBrightUp,
-			hwndBtnBrightDown})
-		SetWindowLong(btn, GWL_STYLE, GetWindowLong(btn, GWL_STYLE) | BS_OWNERDRAW);
-
 	return TRUE;
 }
 
@@ -371,25 +317,12 @@ void ResizeControls(HWND hwnd)
 	int width = rcClient.right;
 	int height = rcClient.bottom;
 
-	MoveWindow(hwndVideo, 1, 1, VIDEO_WIDTH, VIDEO_HEIGHT, TRUE);
+	MoveWindow(hwndVideo, 1, 2, VIDEO_WIDTH, VIDEO_HEIGHT, TRUE);
+	MoveWindow(hwndVideo1, VIDEO_WIDTH + 4, 2, VIDEO_WIDTH, VIDEO_HEIGHT, TRUE);
 
 	int xBtn = width - RIGHT_WIDTH + MARGIN;
 	int y = MARGIN;
 	int btnW = RIGHT_WIDTH - 2 * MARGIN;
-
-	MoveWindow(hwndBtnStart, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnGray, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnBinary, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnInvert, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnGaussian, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnCanny, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnOCR, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnFlipH, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnFlipV, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnBrightUp, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnBrightDown, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnContrastUp, xBtn, y, btnW, BTN_HEIGHT, TRUE); y += 50;
-	MoveWindow(hwndBtnContrastDown, xBtn, y, btnW, BTN_HEIGHT, TRUE);
 
 	MoveWindow(hwndLog, 0, height - LOG_HEIGHT, width, LOG_HEIGHT, TRUE);
 }
@@ -424,6 +357,14 @@ void AppendLog(const std::wstring& msg)
 	int len = GetWindowTextLength(hwndLog);
 	SendMessage(hwndLog, EM_SETSEL, (WPARAM)len, (LPARAM)len);
 	SendMessage(hwndLog, EM_REPLACESEL, FALSE, (LPARAM)msg.c_str());
+}
+
+/// <summary>
+/// 清空日志
+/// </summary>
+void ClearLog()
+{
+	SetWindowText(hwndLog, L"");
 }
 
 /// <summary>
@@ -511,7 +452,7 @@ void VideoThreadOpenCV(HWND hwnd)
 /// </summary>
 /// <param name="hwnd"></param>
 
-void VideoThreadHk(HWND hwnd)
+void VideoThreadHK(HWND hwnd)
 {
 	int nRet = MV_OK;
 	void* handle = nullptr;
@@ -681,6 +622,82 @@ void LoadROITemplate(HWND hwnd) {
 	}
 }
 
+void OCRWith()
+{
+	AppendLog(L"OCR识别按钮点击\r\n");
+
+	cv::Mat frameCopy;
+	{
+		std::lock_guard<std::mutex> lock(g_frameMutex);
+		if (g_lastProcessedFrame.empty()) {
+			AppendLog(L"没有可用的帧进行OCR\r\n");
+			return;
+		}
+		frameCopy = g_lastProcessedFrame.clone();
+	}
+
+	// ---------------- 全图 OCR ----------------
+	cv::Mat gray;
+	cv::cvtColor(frameCopy, gray, cv::COLOR_BGR2GRAY);
+	cv::adaptiveThreshold(gray, gray, 255,
+		cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+		cv::THRESH_BINARY, 25, 15);
+	if (cv::mean(gray)[0] > 127) cv::bitwise_not(gray, gray);
+
+	tess.SetImage(gray.data, gray.cols, gray.rows, 1, gray.step);
+	tess.Recognize(0);
+
+	tesseract::ResultIterator* ri = tess.GetIterator();
+	tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
+
+	if (ri != nullptr) {
+		do {
+			const char* line = ri->GetUTF8Text(level);
+			if (line) {
+				AppendLog(Utf8ToWstring(line) + L"\r\n");
+			}
+
+			int x1, y1, x2, y2;
+			if (ri->BoundingBox(level, &x1, &y1, &x2, &y2)) {
+				x1 = std::max(0, x1); y1 = std::max(0, y1);
+				x2 = std::min(frameCopy.cols - 1, x2);
+				y2 = std::min(frameCopy.rows - 1, y2);
+				cv::rectangle(frameCopy, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 2);
+			}
+		} while (ri->Next(level));
+	}
+
+	// ---------------- 全图二维码识别 ----------------
+	cv::QRCodeDetector qrDecoder;
+	std::vector<cv::Point> qrPoints;
+	std::string qrData = qrDecoder.detectAndDecode(frameCopy, qrPoints);
+
+	if (!qrData.empty() && qrPoints.size() == 4) {
+		AppendLog(L"全图 QRCode结果: " + Utf8ToWstring(qrData) + L"\r\n");
+
+		std::vector<std::vector<cv::Point>> contours;
+		contours.push_back(qrPoints);
+		cv::polylines(frameCopy, contours, true, cv::Scalar(0, 0, 255), 2);
+
+		cv::putText(frameCopy, qrData, qrPoints[0] - cv::Point(0, 10),
+			cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+	}
+
+	// ---------------- 显示全图到 STATICVideo ----------------
+	RECT rc;
+	GetClientRect(hwndVideo1, &rc);
+	cv::Mat resized;
+	cv::resize(frameCopy, resized, cv::Size(rc.right - rc.left, rc.bottom - rc.top));
+	cv::cvtColor(resized, resized, cv::COLOR_BGR2BGRA);
+
+	HDC hdc = GetDC(hwndVideo1);
+	BITMAPINFO bi = { sizeof(BITMAPINFOHEADER), resized.cols, -resized.rows, 1, 32, BI_RGB };
+	StretchDIBits(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+		0, 0, resized.cols, resized.rows,
+		resized.data, &bi, DIB_RGB_COLORS, SRCCOPY);
+	ReleaseDC(hwndVideo1, hdc);
+}
+
 /// <summary>
 /// ================= 窗口过程 =================
 /// </summary>
@@ -695,219 +712,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
-		InitControls((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), hwnd);
-
-		HMENU hMenu = CreateMenu();
-		HMENU hFileMenu = CreatePopupMenu();
-		HMENU hEditMenu = CreatePopupMenu(); // 新的“编辑”菜单
-		HMENU hHelpMenu = CreatePopupMenu(); // 新的“帮助”菜单
-
-		// 文件菜单
-		AppendMenu(hFileMenu, MF_STRING, 201, L"保存 ROI 模板...");
-		AppendMenu(hFileMenu, MF_STRING, 202, L"加载 ROI 模板...");
-		AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hFileMenu, MF_STRING, 205, L"退出(&X)");
-		AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, L"文件(&F)");
-
-		// 编辑菜单
-		AppendMenu(hEditMenu, MF_STRING, 301, L"撤销(&U)");
-		AppendMenu(hEditMenu, MF_STRING, 302, L"重做(&R)");
-		AppendMenu(hEditMenu, MF_SEPARATOR, 0, NULL);
-		AppendMenu(hEditMenu, MF_STRING, 303, L"复制(&C)");
-		AppendMenu(hEditMenu, MF_STRING, 304, L"粘贴(&P)");
-		AppendMenu(hEditMenu, MF_STRING, 305, L"清除All ROI (&D)");
-		AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"编辑(&E)");
-
-		// 帮助菜单
-		AppendMenu(hHelpMenu, MF_STRING, 401, L"关于(&A)..."); // 常用的“关于”对话框
-		AppendMenu(hHelpMenu, MF_STRING, 402, L"帮助主题(&H)...");
-		AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hHelpMenu, L"帮助(&H)");
-
-		SetMenu(hwnd, hMenu);
-	} break;
-	break;
+		/// <summary>
+		/// 创建按钮与Layout
+		/// </summary>
+		/// <param name="hwnd"></param>
+		CreateMenuandLayout(hwnd);
+		break;
+	}
 
 	case WM_SIZE:
+	{
 		ResizeControls(hwnd);
 		break;
+	}
 
 	case WM_COMMAND:
 	{
-		switch (LOWORD(wParam))
-		{
-		case 101: // Start/Stop
-			running = !running;
-			AppendLog(running ? L"视频开始...\r\n" : L"视频停止...\r\n");
-			if (running)
-
-				std::thread(VideoThreadOpenCV, hwndVideo).detach();
-			//std::thread(VideoThreadHk, hwndVideo).detach();
-			break;
-
-		case 102:
-			processMode = GRAY;
-			AppendLog(L"灰度模式\r\n");
-			break;
-
-		case 103:
-			processMode = BINARY;
-			AppendLog(L"二值化模式\r\n");
-			break;
-
-		case 104:
-			processMode = INVERT;
-			AppendLog(L"反色模式\r\n");
-			break;
-
-		case 105:
-			processMode = GAUSSIAN;
-			AppendLog(L"高斯模糊模式\r\n");
-			break;
-
-		case 106:
-			processMode = CANNY;
-			AppendLog(L"边缘检测模式\r\n");
-			break;
-
-		case 107: // OCR
-		{
-			AppendLog(L"OCR识别按钮点击\r\n");
-
-			// 克隆当前处理后的帧
-			cv::Mat frameCopy;
-			{
-				std::lock_guard<std::mutex> lock(g_frameMutex);
-				if (g_lastProcessedFrame.empty()) {
-					AppendLog(L"没有可用的帧进行OCR\r\n");
-					break;
-				}
-				frameCopy = g_lastProcessedFrame.clone();
-			}
-
-			// 获取 ROI 图像，如果没有 ROI 就用全图
-			std::vector<cv::Mat> roiImages = GetROIImages(frameCopy);
-			if (roiImages.empty()) roiImages.push_back(frameCopy); // 没有 ROI 就用全图
-
-			for (size_t i = 0; i < roiImages.size(); i++) {
-				cv::Mat roi = roiImages[i].clone();
-
-				// 灰度化
-				cv::Mat gray;
-				cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
-
-				// 自适应二值化
-				cv::adaptiveThreshold(gray, gray, 255,
-					cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-					cv::THRESH_BINARY, 25, 15);
-				if (cv::mean(gray)[0] > 127) cv::bitwise_not(gray, gray);
-
-				// --- 调试: 显示 ROI 内容 ---
-				//std::string winName = "ROI Debug " + std::to_string(i + 1);
-				//cv::imshow(winName, gray);
-				//cv::waitKey(1);  // 刷新显示
-				// 或者保存为文件：cv::imwrite("roi_" + std::to_string(i+1) + ".png", gray);
-
-				// OCR
-				tess.SetImage(gray.data, gray.cols, gray.rows, 1, gray.step);
-				tess.Recognize(0);
-
-				tesseract::ResultIterator* ri = tess.GetIterator();
-				tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
-
-				AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
-
-				if (ri != nullptr) {
-					do {
-						const char* line = ri->GetUTF8Text(level);
-						if (line) {
-							std::wstring wline = Utf8ToWstring(line);
-							AppendLog(wline + L"\r\n");
-						}
-
-						int x1, y1, x2, y2;
-						if (ri->BoundingBox(level, &x1, &y1, &x2, &y2)) {
-							x1 = std::max(0, x1); y1 = std::max(0, y1);
-							x2 = std::min(roi.cols - 1, x2);
-							y2 = std::min(roi.rows - 1, y2);
-							cv::rectangle(roi, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 0, 255), 2);
-						}
-					} while (ri->Next(level));
-				}
-
-				// 可选：把带框的 ROI 显示在调试窗口
-				cv::imshow("OCR Result ROI " + std::to_string(i + 1), roi);
-				cv::waitKey(1);
-			}
-		}
-		break;
-
-		break;
-
-		case 108:
-			g_flipH = !g_flipH;
-			break;
-
-		case 109:
-			g_flipV = !g_flipV;
-			break;
-
-		case 110:
-			g_beta += 20;
-			break;      // 亮度+
-
-		case 111:
-			g_beta -= 20;
-			break;      // 亮度-
-
-		case 112:
-			g_alpha *= 1.1;
-			break;      // 对比度+
-
-		case 113:
-			g_alpha *= 0.9;
-			break;      // 对比度-
-
-		case 201:
-			SaveROITemplate(hwnd);
-			break;
-
-		case 202:
-			LoadROITemplate(hwnd);
-			break;
-
-		case 205:
-			PostQuitMessage(0);
-			break;
-
-		case 301:
-			/* 撤销逻辑 */
-			break;
-
-		case 302:
-			/* 重做逻辑 */
-			break;
-
-		case 303:
-			/* 复制逻辑 */
-			break;
-
-		case 304:
-			/* 粘贴逻辑 */
-			break;
-
-		case 305:
-			ClearROITemplate(hwnd);
-			break;
-		}
+		return ButtonEventWithForWM_COMMAND(hwnd, msg, wParam, lParam);
 	}
-	break;
 
 	case WM_DRAWITEM:
 	{
 		LPDRAWITEMSTRUCT lpdis = (LPDRAWITEMSTRUCT)lParam;
 		DrawButton(lpdis->hwndItem, lpdis->hDC);
+		break;
 	}
-	break;
 
 	case WM_LBUTTONDOWN:
 	{
@@ -921,10 +750,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			ptStart = pt;
 			roiRect = { pt.x, pt.y, pt.x, pt.y };
 		}
+		break;
 	}
-	break;
 
 	case WM_MOUSEMOVE:
+	{
 		if (roiDrawing) {
 			int x = GET_X_LPARAM(lParam);
 			int y = GET_Y_LPARAM(lParam);
@@ -935,8 +765,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			//InvalidateRect(hwndVideo, nullptr, FALSE); // 刷新绘制
 		}
 		break;
+	}
 
 	case WM_LBUTTONUP:
+	{
 		if (roiDrawing) {
 			roiDrawing = false;
 			if (roiRect.right - roiRect.left > 10 && roiRect.bottom - roiRect.top > 10) {
@@ -948,6 +780,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			}
 		}
 		break;
+	}
 
 	case WM_RBUTTONDOWN:
 	{
@@ -965,16 +798,233 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			AppendLog(L"删除 ROI: " + it->name + L"\r\n");
 			roiList.erase(it);
 		}
+		break;
 	}
-	break;
 
 	case WM_DESTROY:
+	{
 		running = false;
 		PostQuitMessage(0);
 		break;
+	}
+	default:
+	{
+		return DefWindowProc(hwnd, msg, wParam, lParam);
+	}
+	}
+	return 0;
+}
+
+/// <summary>
+/// 按钮事件处理
+/// </summary>
+/// <param name="hwnd"></param>
+/// <param name="msg"></param>
+/// <param name="wParam"></param>
+/// <param name="lParam"></param>
+/// <returns></returns>
+int ButtonEventWithForWM_COMMAND(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	switch (LOWORD(wParam))
+	{
+	case 101: // Start/Stop
+	{
+		running = !running;
+		AppendLog(running ? L"视频开始...\r\n" : L"视频停止...\r\n");
+		if (running)
+
+			//std::thread(VideoThreadOpenCV, hwndVideo).detach();
+			std::thread(VideoThreadHK, hwndVideo).detach();
+		break;
+	}
+
+	case 102:
+	{
+		processMode = GRAY;
+		AppendLog(L"灰度模式\r\n");
+		break;
+	}
+
+	case 103:
+	{
+		processMode = BINARY;
+		AppendLog(L"二值化模式\r\n");
+		break;
+	}
+
+	case 104:
+	{
+		processMode = INVERT;
+		AppendLog(L"反色模式\r\n");
+		break;
+	}
+
+	case 105:
+	{
+		processMode = GAUSSIAN;
+		AppendLog(L"高斯模糊模式\r\n");
+		break;
+	}
+	case 106:
+	{
+		processMode = CANNY;
+		AppendLog(L"边缘检测模式\r\n");
+		break;
+	}
+
+	case 107: // OCR + 全图二维码识别
+	{
+		std::thread([]() {
+			OCRWith();
+			}).detach();
+		break;
+	}
+
+	case 108:
+	{
+		g_flipH = !g_flipH;
+		break;
+	}
+	case 109:
+	{
+		g_flipV = !g_flipV;
+		break;
+	}
+	case 110:
+	{
+		g_beta += 20;
+		break;      // 亮度+
+	}
+	case 111:
+	{
+		g_beta -= 20;
+		break;      // 亮度-
+	}
+	case 112:
+	{
+		g_alpha *= 1.1;
+		break;      // 对比度+
+	}
+
+	case 113:
+	{
+		g_alpha *= 0.9;
+		break;      // 对比度-
+	}
+
+	case 201:
+	{
+		SaveROITemplate(hwnd);
+		break;
+	}
+
+	case 202:
+	{
+		LoadROITemplate(hwnd);
+		break;
+	}
+
+	case 205:
+	{
+		PostQuitMessage(0);
+		break;
+	}
+
+	case 301:
+		/* 撤销逻辑 */
+	{
+		break;
+	}
+
+	case 302:
+		/* 重做逻辑 */
+	{
+		break;
+	}
+
+	case 303:
+		/* 复制逻辑 */
+	{
+		break;
+	}
+
+	case 304:
+		/* 粘贴逻辑 */
+	{
+		break;
+	}
+
+	case 305:
+	{
+		ClearROITemplate(hwnd);
+		break;
+	}
+
+	case 306:
+	{
+		ClearLog();
+		break;
+	}
 
 	default:
 		return DefWindowProc(hwnd, msg, wParam, lParam);
 	}
 	return 0;
+}
+
+/// <summary>
+/// 创建按钮与Layout
+/// </summary>
+/// <param name="hwnd"></param>
+void CreateMenuandLayout(HWND hwnd)
+{
+	InitControls((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), hwnd);
+
+	HMENU hMenu = CreateMenu();
+	HMENU hFileMenu = CreatePopupMenu();
+	HMENU hEditMenu = CreatePopupMenu(); // 新的“编辑”菜单
+	HMENU hHelpMenu = CreatePopupMenu(); // 新的“帮助”菜单
+	HMENU hFunctionMenu = CreatePopupMenu();//功能菜单
+	HMENU hStartMenu = CreatePopupMenu();//启动菜单
+	// 文件菜单
+	AppendMenu(hFileMenu, MF_STRING, 201, L"保存 ROI 模板...");
+	AppendMenu(hFileMenu, MF_STRING, 202, L"加载 ROI 模板...");
+	AppendMenu(hFileMenu, MF_SEPARATOR, 0, NULL);
+	AppendMenu(hFileMenu, MF_STRING, 205, L"退出(&X)");
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFileMenu, L"文件(&F)");
+
+	// 编辑菜单
+	AppendMenu(hEditMenu, MF_STRING, 301, L"撤销(&U)");
+	AppendMenu(hEditMenu, MF_STRING, 302, L"重做(&R)");
+	AppendMenu(hEditMenu, MF_SEPARATOR, 0, NULL);
+	AppendMenu(hEditMenu, MF_STRING, 303, L"复制(&C)");
+	AppendMenu(hEditMenu, MF_STRING, 304, L"粘贴(&P)");
+	AppendMenu(hEditMenu, MF_STRING, 305, L"清除All ROI (&D)");
+	AppendMenu(hEditMenu, MF_STRING, 306, L"清除All日志");
+
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"编辑(&E)");
+	//相机启动菜单
+	AppendMenu(hMenu, MF_POPUP, 101, L"启动(&F5)");
+	//功能菜单
+	AppendMenu(hFunctionMenu, MF_STRING, 102, L"灰度(&A)");
+	AppendMenu(hFunctionMenu, MF_STRING, 103, L"二值化(&B)");
+	AppendMenu(hFunctionMenu, MF_STRING, 104, L"反色(&C)");
+	AppendMenu(hFunctionMenu, MF_STRING, 105, L"高斯模糊(&D)");
+	AppendMenu(hFunctionMenu, MF_STRING, 106, L"边缘检测(&E)");
+	AppendMenu(hFunctionMenu, MF_STRING, 107, L"OCR(&O)");
+	AppendMenu(hFunctionMenu, MF_STRING, 108, L"水平翻转(&G)");
+	AppendMenu(hFunctionMenu, MF_STRING, 109, L"垂直翻转(&H)");
+	AppendMenu(hFunctionMenu, MF_STRING, 110, L"亮度 + (&I)");
+	AppendMenu(hFunctionMenu, MF_STRING, 111, L"亮度 -(&J)");
+	AppendMenu(hFunctionMenu, MF_STRING, 112, L"对比度 +(&K)");
+	AppendMenu(hFunctionMenu, MF_STRING, 113, L"对比度 -(&L)");
+
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFunctionMenu, L"图像处理功能(&U)");
+
+	// 帮助菜单
+	AppendMenu(hHelpMenu, MF_STRING, 401, L"关于(&A)..."); // 常用的“关于”对话框
+	AppendMenu(hHelpMenu, MF_STRING, 402, L"帮助主题(&H)...");
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hHelpMenu, L"帮助(&H)");
+
+	SetMenu(hwnd, hMenu);
 }

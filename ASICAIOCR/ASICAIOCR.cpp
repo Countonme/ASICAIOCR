@@ -109,7 +109,7 @@ void VideoThreadOpenCV(HWND hwnd);
 ///海康相机
 /// </summary>
 /// <param name="hwnd"></param>
-void VideoThreadHK(HWND hwnd);
+void VideoThreadHiK(HWND hwnd);
 /// <summary>
 /// 初始化
 /// </summary>
@@ -224,12 +224,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	//// std::wstring dir = pathW.substr(0, pathW.find_last_of(L"\\/"));
 
 	//// 4. 弹出消息框显示路径
-	MessageBoxW(
-		nullptr,
-		L"",                    // 显示完整路径
-		L"程序执行路径",                   // 标题
-		MB_OK | MB_ICONINFORMATION
-	);
+	//MessageBoxW(
+	//	nullptr,
+	//	L"",                    // 显示完整路径
+	//	L"程序执行路径",                   // 标题
+	//	MB_OK | MB_ICONINFORMATION
+	//);
 	//// 初始化（加载 DLL）
 	//if (!mes.Initialize("SajetConnect.dll")) {  // 注意：字符串前加 L 表示宽字符
 	//	// 弹出错误对话框
@@ -256,13 +256,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 	wc2.lpfnWndProc = DefWindowProc; // 或者你自己写的 WndProc
 	wc2.hInstance = hInstance;
 	wc2.lpszClassName = L"STATICVideo";
-	wc2.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	wc2.hbrBackground = CreateSolidBrush(RGB(148, 197, 195)); // 松石绿
 	wc2.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
 	RegisterClass(&wc);
 	RegisterClass(&wc2);
 	//默认窗体大小
-	RECT rc = { 0,0,1288,768 };
+	RECT rc = { 0,0,1288,960 };
 	AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
 	HWND hwnd = CreateWindowEx(0, L"VideoApp", L"自动化 AI OCR ",
@@ -452,7 +452,7 @@ void VideoThreadOpenCV(HWND hwnd)
 /// </summary>
 /// <param name="hwnd"></param>
 
-void VideoThreadHK(HWND hwnd)
+void VideoThreadHiK(HWND hwnd)
 {
 	int nRet = MV_OK;
 	void* handle = nullptr;
@@ -498,7 +498,10 @@ void VideoThreadHK(HWND hwnd)
 		case 2: cv::threshold(frame, frame, 128, 255, cv::THRESH_BINARY); break;
 		case 3: cv::bitwise_not(frame, frame); break;
 		case 4: cv::GaussianBlur(frame, frame, cv::Size(5, 5), 0); break;
-		case 5: cv::Canny(frame, frame, 50, 150); break;
+		case 5: {
+			cv::Mat gray, edges; cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+			cv::Canny(gray, edges, 50, 150); cv::cvtColor(edges, frame, cv::COLOR_GRAY2BGR);
+		} break;
 		}
 
 		frame.convertTo(frame, -1, g_alpha, g_beta);
@@ -621,7 +624,9 @@ void LoadROITemplate(HWND hwnd) {
 		AppendLog(L"ROI 模板加载成功\r\n");
 	}
 }
-
+/// <summary>
+/// OCR 处理
+/// </summary>
 void OCRWith()
 {
 	AppendLog(L"OCR识别按钮点击\r\n");
@@ -834,7 +839,7 @@ int ButtonEventWithForWM_COMMAND(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 		if (running)
 
 			//std::thread(VideoThreadOpenCV, hwndVideo).detach();
-			std::thread(VideoThreadHK, hwndVideo).detach();
+			std::thread(VideoThreadHiK, hwndVideo).detach();
 		break;
 	}
 
@@ -1005,6 +1010,7 @@ void CreateMenuandLayout(HWND hwnd)
 	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"编辑(&E)");
 	//相机启动菜单
 	AppendMenu(hMenu, MF_POPUP, 101, L"启动(&F5)");
+	AppendMenu(hMenu, MF_STRING, 107, L"OCR(&O)");
 	//功能菜单
 	AppendMenu(hFunctionMenu, MF_STRING, 102, L"灰度(&A)");
 	AppendMenu(hFunctionMenu, MF_STRING, 103, L"二值化(&B)");
@@ -1018,6 +1024,7 @@ void CreateMenuandLayout(HWND hwnd)
 	AppendMenu(hFunctionMenu, MF_STRING, 111, L"亮度 -(&J)");
 	AppendMenu(hFunctionMenu, MF_STRING, 112, L"对比度 +(&K)");
 	AppendMenu(hFunctionMenu, MF_STRING, 113, L"对比度 -(&L)");
+	AppendMenu(hFunctionMenu, MF_STRING, 114, L"二维码读取(&Q&R)");
 
 	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFunctionMenu, L"图像处理功能(&U)");
 

@@ -1452,8 +1452,8 @@ cv::Mat detectAndDrawQRCodeZXing(cv::Mat& img) {
 	ZXing::ImageView zimg(roiGray.data, roiGray.cols, roiGray.rows, ZXing::ImageFormat::Lum);
 
 	// 显示结果
-	cv::imshow("QR Code", img);
-	cv::waitKey(0);
+	//cv::imshow("QR Code", img);
+	//cv::waitKey(0);
 	auto result = ZXing::ReadBarcode(zimg, ZXing::DecodeHints().setTryHarder(true));
 	if (result.isValid()) {
 		// 直接使用 result.text()，已经是 std::string
@@ -1551,7 +1551,6 @@ bool SaveVideo1ImageAuto(const cv::Mat& img) {
 	return success;
 }
 
-
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -1588,4 +1587,3 @@ void DrawWrongWordOnFrame(cv::Mat& frame, const std::wstring& wrongWord, const s
 	// 绘制候选词 (蓝色)
 	cv::putText(frame, "-> " + sugStrUtf8, cv::Point(x + 200, y), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 0, 0), 1);
 }
-

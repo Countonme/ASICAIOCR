@@ -28,6 +28,13 @@
 #include <string>
 #include <locale>
 #include <codecvt>
+//Zxing 条码识别
+#include <ZXing/ReadBarcode.h>
+#include <ZXing/TextUtfEncoding.h>
+#include <ZXing/BarcodeFormat.h>
+#include <ZXing/DecodeHints.h>
+// 单词拼写检查
+#include "WordSpellChecker.h"
 /// <summary>
 /// 全局声明 系统弹窗
 /// </summary>
@@ -50,6 +57,8 @@ bool g_showReferenceLines = false;
 /// 全局变量：控制目标是否要绘制ROI
 /// </summary>
 bool g_showROI = false;
+// 全局变量:在函数开头或者全局声明 自定义词典
+WordSpellChecker g_spellChecker("dictionary.txt");
 
 HMENU hMenu = nullptr; // 全局
 std::atomic<bool> running{ false };
@@ -79,29 +88,28 @@ bool roiDrawing = false;
 POINT ptStart = { 0,0 };
 
 /// <summary>
-/// UTF-8 转 wchar_t（Windows 专用）
+/// UTF-8 转 wchar_t（Windows 专用）  C++17后的写法
 /// </summary>
 /// <param name="str"></param>
 /// <returns></returns>
-std::wstring Utf8ToWstring(const std::string& str)
+// wstring -> UTF-8
+inline std::string wstringToUtf8(const std::wstring& wstr)
 {
-	if (str.empty()) return L"";
-	int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
-		(int)str.size(), NULL, 0);
-	std::wstring wstr(sizeNeeded, 0);
-	MultiByteToWideChar(CP_UTF8, 0, str.c_str(),
-		(int)str.size(), &wstr[0], sizeNeeded);
-	return wstr;
+	if (wstr.empty()) return {};
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+	std::string strTo(size_needed, 0);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &strTo[0], size_needed, nullptr, nullptr);
+	return strTo;
 }
-/// <summary>
-/// wstring to string
-/// </summary>
-/// <param name="wstr"></param>
-/// <returns></returns>
-inline std::string WstringToUtf8(const std::wstring& wstr)
+
+// UTF-8 -> wstring
+inline std::wstring utf8ToWstring(const std::string& str)
 {
-	std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
-	return conv.to_bytes(wstr);
+	if (str.empty()) return {};
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
+	std::wstring wstrTo(size_needed, 0);
+	MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &wstrTo[0], size_needed);
+	return wstrTo;
 }
 
 /// <summary>
@@ -233,6 +241,15 @@ int ButtonEventWithForWM_COMMAND(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
  * @return 是否成功
  */
 bool SaveVideo1ImageAuto(const cv::Mat& img);
+
+/**
+ * 在图像上绘制错词及候选词
+ * frame       : 要绘制的图像
+ * wrongWord   : 错词
+ * suggestions : 候选词
+ * x, y       : 绘制起点坐标
+ */
+void DrawWrongWordOnFrame(cv::Mat& frame, const std::wstring& wrongWord, const std::vector<std::wstring>& suggestions, int x, int y);
 /// <summary>
 /// 输入框
 /// </summary>
@@ -242,11 +259,19 @@ bool SaveVideo1ImageAuto(const cv::Mat& img);
 std::wstring InputBox(HWND hwndParent, const std::wstring& prompt);
 
 /// <summary>
-/// 二维码势
+/// 二维识别OpenCV
 /// </summary>
 /// <param name="img"></param>
 
 cv::Mat detectAndDrawQRCode(cv::Mat& img);
+
+/// <summary>
+/// 条码识别ZXing
+/// </summary>
+/// <param name="img"></param>
+/// <returns></returns>
+cv::Mat detectAndDrawQRCodeZXing(cv::Mat& img);
+
 /// <summary>
 /// 输入框
 /// </summary>
@@ -837,7 +862,7 @@ void OCRWith()
 		}
 		frameCopy = g_lastProcessedFrame.clone();
 	}
-	//frameCopy = detectAndDrawQRCode(frameCopy);
+	//frameCopy = detectAndDrawQRCodeZXing(frameCopy);
 	// 获取所有 ROI 区域的 OpenCV Rect
 	std::vector<cv::Rect> roiRects = GetROIRects(frameCopy);
 	if (roiRects.empty()) {
@@ -854,7 +879,7 @@ void OCRWith()
 		if (g_showROI) {
 			DrawTheTargetROI(roiRects, frameCopy);
 		}
-
+		detectAndDrawQRCodeZXing(roi);
 		// 灰度化
 		cv::Mat gray;
 		cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
@@ -871,15 +896,32 @@ void OCRWith()
 
 		tesseract::ResultIterator* ri = tess.GetIterator();
 		tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
-		detectAndDrawQRCode(gray);
+
 		AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
 
 		if (ri != nullptr) {
 			do {
 				const char* line = ri->GetUTF8Text(level);
 				if (line) {
-					std::wstring wline = Utf8ToWstring(line);
+					std::wstring wline = utf8ToWstring(line);
 					AppendLog(wline + L"\r\n");
+					// --------- 使用 SpellChecker 分词并检查 ----------
+
+					std::vector<std::string> words = g_spellChecker.extractWords(wstringToUtf8(wline));
+					int x = 10; // 初始绘制位置 X
+					int y = 30; // 初始绘制位置 Y，逐行增加
+					for (const auto& word : words) {
+						if (!g_spellChecker.isWordCorrect(word)) {
+							auto suggestions = g_spellChecker.getSuggestions(word, 1); // 最大编辑距离 1
+							std::vector<std::wstring> wsuggestions;
+							for (const auto& s : suggestions)
+								wsuggestions.push_back(utf8ToWstring(s));
+
+							// 在 frameCopy 上绘制错词
+							DrawWrongWordOnFrame(frameCopy, utf8ToWstring(word), wsuggestions, x, y);
+						}
+						y += 30; // 每个单词绘制行间隔
+					}
 				}
 
 				int x1, y1, x2, y2;
@@ -1367,7 +1409,7 @@ cv::Mat DrawTheTargetROI(std::vector<cv::Rect>  roiRects, cv::Mat frameCopy)
 }
 
 /// <summary>
-/// 二维码势
+/// 条码识别OpenCV
 /// </summary>
 /// <param name="img"></param>
 
@@ -1396,6 +1438,46 @@ cv::Mat detectAndDrawQRCode(cv::Mat& img) {
 	return img;
 }
 
+/// <summary>
+/// 条码识别ZXing
+/// </summary>
+/// <param name="img"></param>
+/// <returns></returns>
+cv::Mat detectAndDrawQRCodeZXing(cv::Mat& img) {
+	cv::Mat roiGray = img;
+	if (!roiGray.isContinuous()) {
+		roiGray = roiGray.clone();  // 保证连续内存
+	}
+
+	ZXing::ImageView zimg(roiGray.data, roiGray.cols, roiGray.rows, ZXing::ImageFormat::Lum);
+
+	// 显示结果
+	cv::imshow("QR Code", img);
+	cv::waitKey(0);
+	auto result = ZXing::ReadBarcode(zimg, ZXing::DecodeHints().setTryHarder(true));
+	if (result.isValid()) {
+		// 直接使用 result.text()，已经是 std::string
+		std::string decoded_info = result.text();
+		std::cout << "Decoded Data: " << decoded_info << std::endl;
+		AppendLog(L"Decoded Data: " + utf8ToWstring(decoded_info));
+		// 绘制边框
+		auto points = result.position();
+		if (!points.empty() && points.size() >= 4) {
+			for (size_t i = 0; i < points.size(); i++) {
+				cv::line(img,
+					cv::Point(points[i].x, points[i].y),
+					cv::Point(points[(i + 1) % points.size()].x, points[(i + 1) % points.size()].y),
+					cv::Scalar(255, 0, 0), 3);
+			}
+		}
+	}
+	else {
+		AppendLog(L"No QR code could be detected or decoded.");
+		//std::cerr << "No QR code could be detected or decoded." << std::endl;
+	}
+
+	return img;
+}
 // 检查目录是否存在
 bool MyDirectoryExists(const std::string& path) {
 	DWORD attr = GetFileAttributesA(path.c_str());
@@ -1468,3 +1550,42 @@ bool SaveVideo1ImageAuto(const cv::Mat& img) {
 
 	return success;
 }
+
+
+#include <windows.h>
+#include <string>
+#include <vector>
+
+/**
+ * 在 UI 上绘制错词及候选词
+ * hwnd       : 目标窗口句柄
+ * wrongWord  : 宽字符错词
+ * suggestions: 宽字符候选词列表
+ */
+#include <opencv2/opencv.hpp>
+#include <string>
+#include <vector>
+
+ /**
+  * 在图像上绘制错词及候选词
+  * frame       : 要绘制的图像
+  * wrongWord   : 错词
+  * suggestions : 候选词
+  * x, y       : 绘制起点坐标
+  */
+void DrawWrongWordOnFrame(cv::Mat& frame, const std::wstring& wrongWord, const std::vector<std::wstring>& suggestions, int x, int y)
+{
+	// 将 wstring 转成 string（UTF-8）
+	std::string wStrUtf8(wrongWord.begin(), wrongWord.end());
+	std::string sugStrUtf8;
+	for (const auto& s : suggestions) {
+		sugStrUtf8 += std::string(s.begin(), s.end()) + " ";
+	}
+
+	// 绘制错词 (红色)
+	cv::putText(frame, wStrUtf8, cv::Point(x, y), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
+
+	// 绘制候选词 (蓝色)
+	cv::putText(frame, "-> " + sugStrUtf8, cv::Point(x + 200, y), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 0, 0), 1);
+}
+

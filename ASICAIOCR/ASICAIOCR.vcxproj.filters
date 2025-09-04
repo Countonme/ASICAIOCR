@@ -42,6 +42,9 @@
     <ClInclude Include="LoadLibraryWithDetailedError.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="WordSpellChecker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ASICAIOCR.cpp">
@@ -60,6 +63,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LoadLibraryWithDetailedError.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="WordSpellChecker.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

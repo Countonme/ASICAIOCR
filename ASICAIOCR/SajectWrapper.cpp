@@ -13,10 +13,24 @@ bool FileExists(const std::string& path) {
 	return _access(path.c_str(), 0) == 0;
 }
 
-// 辅助函数：string 转 wstring
-std::wstring s2ws(const std::string& str) {
-	std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-	return converter.from_bytes(str);
+// wstring -> UTF-8
+inline std::string wstringToUtf8(const std::wstring& wstr)
+{
+	if (wstr.empty()) return {};
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+	std::string strTo(size_needed, 0);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &strTo[0], size_needed, nullptr, nullptr);
+	return strTo;
+}
+
+// UTF-8 -> wstring
+inline std::wstring utf8ToWstring(const std::string& str)
+{
+	if (str.empty()) return {};
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
+	std::wstring wstrTo(size_needed, 0);
+	MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &wstrTo[0], size_needed);
+	return wstrTo;
 }
 
 bool SajectConnect::Initialize(const std::string& dllPath) {
@@ -27,7 +41,7 @@ bool SajectConnect::Initialize(const std::string& dllPath) {
 	if (!FileExists(dllPath)) {
 		std::cerr << "DLL 文件不存在: " << dllPath << std::endl;
 
-		std::wstring msg = L"文件不存在: " + s2ws(dllPath);
+		std::wstring msg = L"文件不存在: " + utf8ToWstring(dllPath);
 		MessageBoxW(nullptr, msg.c_str(), L"错误", MB_OK | MB_ICONERROR);
 
 		return false;

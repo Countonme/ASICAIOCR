@@ -894,57 +894,64 @@ void OCRWith()
 		tess.SetImage(gray.data, gray.cols, gray.rows, 1, gray.step);
 		tess.Recognize(0);
 
-		tesseract::ResultIterator* ri = tess.GetIterator();
-		tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
+		//tesseract::ResultIterator* ri = tess.GetIterator();
+		//tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
 
 		AppendLog(L"ROI " + std::to_wstring(i + 1) + L" OCR结果:\r\n");
 
+		tesseract::ResultIterator* ri = tess.GetIterator();
+		tesseract::PageIteratorLevel level = tesseract::RIL_WORD;
+
 		if (ri != nullptr) {
 			do {
-				const char* line = ri->GetUTF8Text(level);
-				if (line) {
-					std::wstring wline = utf8ToWstring(line);
-					AppendLog(wline + L"\r\n");
-					// --------- 使用 SpellChecker 分词并检查 ----------
+				const char* word_utf8 = ri->GetUTF8Text(level);
+				float conf = ri->Confidence(level); // 置信度，可以用来做过滤
+				if (word_utf8) {
+					std::string word_str(word_utf8);
+					std::wstring wword = utf8ToWstring(word_str);
 
-					std::vector<std::string> words = g_spellChecker.extractWords(wstringToUtf8(wline));
-					int x = 10; // 初始绘制位置 X
-					int y = 30; // 初始绘制位置 Y，逐行增加
-					for (const auto& word : words) {
-						if (!g_spellChecker.isWordCorrect(word)) {
-							auto suggestions = g_spellChecker.getSuggestions(word, 1); // 最大编辑距离 1
-							std::vector<std::wstring> wsuggestions;
-							for (const auto& s : suggestions)
-								wsuggestions.push_back(utf8ToWstring(s));
+					// 检查拼写
+					bool correct = g_spellChecker.isWordCorrect(word_str);
 
-							// 在 frameCopy 上绘制错词
-							DrawWrongWordOnFrame(frameCopy, utf8ToWstring(word), wsuggestions, x, y);
+					int x1, y1, x2, y2;
+					if (ri->BoundingBox(level, &x1, &y1, &x2, &y2)) {
+						// 将相对 roi 的坐标转换为全局坐标
+						x1 += roiRect.x;
+						y1 += roiRect.y;
+						x2 += roiRect.x;
+						y2 += roiRect.y;
+
+						// 边界修正
+						x1 = std::max(0, std::min(x1, frameCopy.cols - 1));
+						y1 = std::max(0, std::min(y1, frameCopy.rows - 1));
+						x2 = std::max(0, std::min(x2, frameCopy.cols - 1));
+						y2 = std::max(0, std::min(y2, frameCopy.rows - 1));
+
+						if (x1 < x2 && y1 < y2) {
+							// 绘制矩形：绿色=正确，红色=错误
+							cv::Scalar color = correct ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+							cv::rectangle(frameCopy, cv::Point(x1, y1), cv::Point(x2, y2), color, 2);
+
+							// 在框上方绘制文字
+							int baseline = 0;
+							cv::Size textSize = cv::getTextSize(word_str, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
+							cv::Point textOrg(x1, y1 - 5);
+
+							cv::putText(frameCopy, word_str, textOrg, cv::FONT_HERSHEY_SIMPLEX,
+								0.5, color, 1, cv::LINE_AA);
+
+							// 如果错误，附加候选词
+							if (!correct) {
+								auto suggestions = g_spellChecker.getSuggestions(word_str, 1);
+								if (!suggestions.empty()) {
+									std::string sug = "-> " + suggestions[0]; // 只显示第一个建议
+									cv::putText(frameCopy, sug, cv::Point(x1, y2 + 15),
+										cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 0, 0), 1, cv::LINE_AA);
+								}
+							}
 						}
-						y += 30; // 每个单词绘制行间隔
 					}
-				}
-
-				int x1, y1, x2, y2;
-				if (ri->BoundingBox(level, &x1, &y1, &x2, &y2)) {
-					// 将相对 roi 的坐标转换为相对于 frameCopy 的全局坐标
-					x1 += roiRect.x;
-					y1 += roiRect.y;
-					x2 += roiRect.x;
-					y2 += roiRect.y;
-
-					// 确保调整后的坐标在有效范围内 可能會有負數
-					x1 = std::max(0, std::min(x1, frameCopy.cols - 1));
-					y1 = std::max(0, std::min(y1, frameCopy.rows - 1));
-					x2 = std::max(0, std::min(x2, frameCopy.cols - 1));
-					y2 = std::max(0, std::min(y2, frameCopy.rows - 1));
-
-					// 确保左上角坐标小于右下角坐标
-					if (x1 < x2 && y1 < y2) {
-						cv::rectangle(frameCopy, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 1);
-					}
-					else {
-						std::cout << "Invalid coordinates: (" << x1 << ", " << y1 << ") to (" << x2 << ", " << y2 << ")" << std::endl;
-					}
+					delete[] word_utf8; // 释放 tesseract 分配的字符串
 				}
 			} while (ri->Next(level));
 		}
@@ -1551,27 +1558,13 @@ bool SaveVideo1ImageAuto(const cv::Mat& img) {
 	return success;
 }
 
-#include <windows.h>
-#include <string>
-#include <vector>
-
 /**
- * 在 UI 上绘制错词及候选词
- * hwnd       : 目标窗口句柄
- * wrongWord  : 宽字符错词
- * suggestions: 宽字符候选词列表
+ * 在图像上绘制错词及候选词
+ * frame       : 要绘制的图像
+ * wrongWord   : 错词
+ * suggestions : 候选词
+ * x, y       : 绘制起点坐标
  */
-#include <opencv2/opencv.hpp>
-#include <string>
-#include <vector>
-
- /**
-  * 在图像上绘制错词及候选词
-  * frame       : 要绘制的图像
-  * wrongWord   : 错词
-  * suggestions : 候选词
-  * x, y       : 绘制起点坐标
-  */
 void DrawWrongWordOnFrame(cv::Mat& frame, const std::wstring& wrongWord, const std::vector<std::wstring>& suggestions, int x, int y)
 {
 	// 将 wstring 转成 string（UTF-8）
